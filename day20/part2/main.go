@@ -2,19 +2,17 @@ package main
 
 import (
 	"fmt"
-	"maps"
+	// "maps"
 	"os"
-	"slices"
-	// "reflect"
-	// "math"
 	// "slices"
-	// "strconv"
-	// "iter"
 	"strings"
 )
 
-const CHEAT_LEN = 6
-const MIN_SAVINGS = 50
+const CHEAT_LEN = 20
+
+// const MIN_SAVINGS = 50
+
+const MIN_SAVINGS = 100
 
 type cheat struct {
 	end [2]int
@@ -22,20 +20,22 @@ type cheat struct {
 }
 
 func main() {
-	data, err := os.ReadFile("test.txt")
+	// data, err := os.ReadFile("test.txt")
+	data, err := os.ReadFile("input.txt")
 	check(err)
 
 	walls, start, end, n := parseInput(data)
 	fmt.Printf("Input: %d walls, %v start, %v end, n = %d\n", len(walls), start, end, n)
 
-	minPath, scores := runDijkstra(walls, end, start)
+	// Run Dijkstra in reverse first
+	minPath, scores := runDijkstra(walls, start, end, n)
 	fmt.Printf("Min path is %d\n", minPath)
 
 	result := runDijkstraWithCheats(walls, end, start, n, minPath, scores)
 	fmt.Printf("Result: %d", result)
 }
 
-func runDijkstra(walls map[[2]int]struct{}, end [2]int, start [2]int) (minPath int, scores map[[2]int]int) {
+func runDijkstra(walls map[[2]int]struct{}, end [2]int, start [2]int, n int) (minPath int, scores map[[2]int]int) {
 	priorityQueue := make(map[int][][2]int, 1)
 	priorityQueue[0] = [][2]int{start}
 	scoreWatermark := 0
@@ -54,7 +54,7 @@ func runDijkstra(walls map[[2]int]struct{}, end [2]int, start [2]int) (minPath i
 			minPath = scoreWatermark
 			return
 		} else {
-			for _, next := range getMoves(current) {
+			for _, next := range getMoves(current, n) {
 				if _, isWall := walls[next]; !isWall {
 					queueUp(priorityQueue, scoreWatermark+1, next)
 				}
@@ -66,7 +66,7 @@ func runDijkstra(walls map[[2]int]struct{}, end [2]int, start [2]int) (minPath i
 }
 
 func runDijkstraWithCheats(walls map[[2]int]struct{}, end [2]int, start [2]int, n int, minPath int, scores map[[2]int]int) (cheatCount int) {
-	cheatMap := make(map[int]int, 0)
+	cheatMap := make(map[int]map[[2][2]int]struct{}, 0)
 
 	priorityQueue := make(map[int][][2]int, 1)
 	priorityQueue[0] = [][2]int{start}
@@ -81,23 +81,25 @@ func runDijkstraWithCheats(walls map[[2]int]struct{}, end [2]int, start [2]int, 
 			continue
 		}
 		visited[current] = struct{}{}
-		// fmt.Printf("Processing state %v with score %d\n", current, scoreWatermark)
 
 		if current != end {
 			for _, cheat := range getCheats(current, n) {
 				if _, isVisited := visited[cheat.end]; !isVisited {
-					for _, next := range getMoves(cheat.end) {
-						if _, isWall := walls[next]; !isWall {
-							savings := scores[next] - scoreWatermark - 1 - cheat.len
+					if _, isWall := walls[cheat.end]; !isWall {
+						if knownScore, ok := scores[cheat.end]; ok {
+							savings := minPath - knownScore - scoreWatermark - cheat.len
 							if savings >= MIN_SAVINGS {
-								cheatMap[savings]++
+								if _, ok := cheatMap[savings]; !ok {
+									cheatMap[savings] = make(map[[2][2]int]struct{})
+								}
+								cheatMap[savings][[2][2]int{current, cheat.end}] = struct{}{}
 							}
 						}
 					}
 				}
 			}
 
-			for _, next := range getMoves(current) {
+			for _, next := range getMoves(current, n) {
 				if _, isWall := walls[next]; !isWall {
 					queueUp(priorityQueue, scoreWatermark+1, next)
 				}
@@ -105,13 +107,13 @@ func runDijkstraWithCheats(walls map[[2]int]struct{}, end [2]int, start [2]int, 
 		}
 	}
 
-	for _, count := range cheatMap {
-		cheatCount += count
+	for _, cheats := range cheatMap {
+		cheatCount += len(cheats)
 	}
 
-	for _, score := range slices.Sorted(maps.Keys(cheatMap)) {
-		fmt.Printf("Got %d cheats that save %d\n", cheatMap[score], score)
-	}
+	// for _, score := range slices.Sorted(maps.Keys(cheatMap)) {
+	// 	fmt.Printf("Got %d cheats that save %d\n", len(cheatMap[score]), score)
+	// }
 
 	return
 }
@@ -142,13 +144,22 @@ func queueUp(priorityQueue map[int][][2]int, score int, item [2]int) {
 	}
 }
 
-func getMoves(pos [2]int) [4][2]int {
-	return [4][2]int{
-		{pos[0] - 1, pos[1]},
-		{pos[0] + 1, pos[1]},
-		{pos[0], pos[1] - 1},
-		{pos[0], pos[1] + 1},
+func getMoves(pos [2]int, n int) (moves [][2]int) {
+	moves = make([][2]int, 0)
+
+	if pos[0] > 0 {
+		moves = append(moves, [2]int{pos[0] - 1, pos[1]})
 	}
+	if pos[0] < n-1 {
+		moves = append(moves, [2]int{pos[0] + 1, pos[1]})
+	}
+	if pos[1] > 0 {
+		moves = append(moves, [2]int{pos[0], pos[1] - 1})
+	}
+	if pos[1] < n-1 {
+		moves = append(moves, [2]int{pos[0], pos[1] + 1})
+	}
+	return
 }
 
 func getCheats(pos [2]int, n int) (cheats []cheat) {
@@ -167,7 +178,7 @@ func getCheats(pos [2]int, n int) (cheats []cheat) {
 }
 
 func appendIfInBounds(cheats *[]cheat, n int, x int, y int, d int) {
-	if x > 0 || x < n-1 || y > 0 || y < n-1 {
+	if x >= 0 && x < n && y >= 0 && y < n {
 		*cheats = append(*cheats, cheat{[2]int{x, y}, d})
 	}
 }
