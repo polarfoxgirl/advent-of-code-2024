@@ -184,7 +184,6 @@ func runDijkstra(code [4]numButton) int {
 		visited[current] = struct{}{}
 
 		if current.progress == len(code) {
-			// fmt.Println(currentPath)
 			return scoreWatermark
 		} else {
 			for _, button := range [5]dirButton{UP, DOWN, RIGHT, LEFT, PRESS} {

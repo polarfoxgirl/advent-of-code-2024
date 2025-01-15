@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 // NOTE: for [2]int coordinates {0, 0} is bottom left corner
 type state struct {
-	numKeyPad  [2]int
-	dirKeyPads [25][2]int
-	progress   int
+	keyPad   [2]int
+	progress int
 }
 
 type dirButton int
@@ -70,6 +70,8 @@ var numButtons = map[[2]int]numButton{
 	{2, 0}: ACTION,
 }
 
+const ITERATIONS = 25
+
 func main() {
 	data, err := os.ReadFile("input.txt")
 	check(err)
@@ -77,76 +79,231 @@ func main() {
 	codes := parseInput(data)
 	fmt.Printf("Input: %d codes\n", len(codes))
 
-	// TODO: Too slow...
+	conMap := getConMap()
+	reverseDirButtons := getReverseDirButtons()
+
+	// Only leave paths with the most efficient 25th "derivatives"
+	conMap = pruneMap(conMap, reverseDirButtons)
+	lenMap := calcLenMap(conMap, reverseDirButtons)
+
 	result := 0
 	for _, code := range codes {
-		minPresses := runDijkstra(code)
-		fmt.Printf("Need %d presses for code %v\n", minPresses, code)
-		result += getComplexity(code, minPresses)
+		result += processNumCode(lenMap, reverseDirButtons, code)
 	}
 
 	fmt.Printf("Result: %d\n", result)
 }
 
-func updateDirPad(button dirButton, current state, code [4]numButton, dirPad int) (next state, ok bool) {
-	if button == PRESS {
-		nextDirButton, valid := dirButtons[current.dirKeyPads[dirPad]]
-		if !valid {
-			panic(fmt.Sprintf("Attempting to press invalid button %v on the dir pad %d", current.dirKeyPads[dirPad-1], dirPad-1))
-		}
-
-		if dirPad == 0 {
-			return updateNumPad(nextDirButton, current, code)
-		} else {
-			return updateDirPad(nextDirButton, current, code, dirPad-1)
-		}
-	} else {
-		// Moving first dir pad arm
-		updatedDir := pressDirMove(button, current.dirKeyPads[dirPad])
-		if _, valid := dirButtons[updatedDir]; valid {
-			ok = true
-			updateDirPads := current.dirKeyPads
-			updateDirPads[dirPad] = updatedDir
-			next = state{
-				numKeyPad:  current.numKeyPad,
-				dirKeyPads: updateDirPads,
-				progress:   current.progress,
+func getConMap() (conMap map[[2][2]int][][]dirButton) {
+	conMap = make(map[[2][2]int][][]dirButton)
+	for x1 := 0; x1 < 3; x1++ {
+		for y1 := 0; y1 < 2; y1++ {
+			pos1 := [2]int{x1, y1}
+			if _, ok1 := dirButtons[pos1]; ok1 {
+				for x2 := 0; x2 < 3; x2++ {
+					for y2 := 0; y2 < 2; y2++ {
+						pos2 := [2]int{x2, y2}
+						if target, ok2 := dirButtons[pos2]; ok2 {
+							conMap[[2][2]int{pos1, pos2}] = runDijkstra(1, pos1, getUpdateFn([]dirButton{target}, dirButtons))
+						}
+					}
+				}
 			}
-			// fmt.Printf("Button %d on dir pad %d updated state:\n%v\n%v\n\n", button, dirPad, current, next)
 		}
 	}
 	return
 }
 
-func updateNumPad(button dirButton, current state, code [4]numButton) (next state, ok bool) {
-	if button == PRESS {
-		numButton, validNumButton := numButtons[current.numKeyPad]
-		if !validNumButton {
-			panic(fmt.Sprintf("Attempting to press invalid button %v on the num pad", current.numKeyPad))
+func pruneMap(conMap map[[2][2]int][][]dirButton, reverseDirButtons map[dirButton][2]int) map[[2][2]int][][]dirButton {
+	pruned := conMap
+	cache := make(map[string][][]dirButton)
+	for _, paths := range conMap {
+		for _, path := range paths {
+			cache[printCode(path)] = [][]dirButton{path}
 		}
+	}
 
-		if code[current.progress] == numButton {
-			ok = true
-			next = state{
-				numKeyPad:  current.numKeyPad,
-				dirKeyPads: current.dirKeyPads,
-				progress:   current.progress + 1,
-			}
-		}
+	// Can combine pruning and length calculation
+	shouldPrune := true
+	for k := 0; k < 25 && shouldPrune; k++ {
+		current := pruned
+		pruned = make(map[[2][2]int][][]dirButton)
+		shouldPrune = false
 
-	} else {
-		// Moving num pad arm
-		num := pressDirMove(button, current.numKeyPad)
-		if _, validNum := numButtons[num]; validNum {
-			ok = true
-			next = state{
-				numKeyPad:  num,
-				dirKeyPads: current.dirKeyPads,
-				progress:   current.progress,
+		for pair, paths := range current {
+			if len(paths) > 1 {
+				minLen := 0
+				goodPaths := make([][]dirButton, 0)
+				for _, path := range paths {
+					codStr := printCode(path)
+					results := processDirPad(current, reverseDirButtons, cache[codStr])
+					cache[codStr] = results
+
+					pathMinLen := len(results[0])
+					if minLen == 0 {
+						// Init
+						goodPaths = append(goodPaths, path)
+						minLen = pathMinLen
+					} else if minLen > pathMinLen {
+						// Replace
+						goodPaths = [][]dirButton{path}
+						minLen = pathMinLen
+					} else if minLen == pathMinLen {
+						// Append
+						goodPaths = append(goodPaths, path)
+					} else {
+						// Ignore
+					}
+				}
+
+				pruned[pair] = goodPaths
+				shouldPrune = true
+			} else {
+				pruned[pair] = paths
 			}
 		}
 	}
+
+	// After this we expect one path per pair
+	for _, paths := range pruned {
+		if len(paths) > 1 {
+			panic("Unsuccessful pruning!")
+		}
+	}
+	return pruned
+}
+
+func calcLenMap(pruned map[[2][2]int][][]dirButton, reverseDirButtons map[dirButton][2]int) (lenMap map[[2][2]int]int) {
+	lenMap = make(map[[2][2]int]int)
+	for pair, paths := range pruned {
+		lenMap[pair] = len(paths[0])
+	}
+
+	// One less iteration since we already did one when populating the map
+	for k := 0; k < ITERATIONS-1; k++ {
+		nextLenMap := make(map[[2][2]int]int)
+
+		for pair, paths := range pruned {
+			// We always come back to A after button cycle
+			current := reverseDirButtons[PRESS]
+			pathTotal := 0
+			for _, button := range paths[0] {
+				target := reverseDirButtons[button]
+
+				pathTotal += lenMap[[2][2]int{current, target}]
+				current = target
+			}
+			nextLenMap[pair] = pathTotal
+		}
+
+		lenMap = nextLenMap
+	}
+
 	return
+}
+
+func getReverseDirButtons() (reverseDirButtons map[dirButton][2]int) {
+	reverseDirButtons = make(map[dirButton][2]int)
+	for key, value := range dirButtons {
+		reverseDirButtons[value] = key
+	}
+	return
+}
+
+func processNumCode(lenMap map[[2][2]int]int, reverseDirButtons map[dirButton][2]int, code [4]numButton) int {
+	nextCodes := runDijkstra(len(code), [2]int{2, 0}, getUpdateFn(code[:], numButtons))
+
+	minTotal := 0
+	for _, nextCode := range nextCodes {
+		total := calcDirCodeLen(lenMap, reverseDirButtons, nextCode)
+
+		if minTotal == 0 || minTotal > total {
+			minTotal = total
+		}
+	}
+	return getComplexity(code, minTotal)
+}
+
+func processDirPad(conMap map[[2][2]int][][]dirButton, reverseDirButtons map[dirButton][2]int, codes [][]dirButton) (allDirCodes [][]dirButton) {
+	minLen := 0
+	for _, code := range codes {
+		dirCodes := processDirCode(conMap, reverseDirButtons, code)
+
+		// We expect all codes for the same sequence to be the same
+		codeMinLen := len(dirCodes[0])
+		if minLen == 0 {
+			// Init
+			allDirCodes = dirCodes
+			minLen = codeMinLen
+		} else if minLen > codeMinLen {
+			// Replace
+			allDirCodes = dirCodes
+			minLen = codeMinLen
+		} else if minLen == codeMinLen {
+			// Append
+			allDirCodes = slices.Concat(allDirCodes, dirCodes)
+		} else {
+			// Ignore
+		}
+	}
+
+	return allDirCodes
+}
+
+func processDirCode(conMap map[[2][2]int][][]dirButton, reverseDirButtons map[dirButton][2]int, code []dirButton) (dirCodes [][]dirButton) {
+	dirCodes = [][]dirButton{{}}
+	current := [2]int{2, 1}
+	for _, button := range code {
+		target := reverseDirButtons[button]
+		extendedDirCodes := make([][]dirButton, 0)
+		for _, suffix := range conMap[[2][2]int{current, target}] {
+			extendedDirCodes = slices.Concat(extendedDirCodes, genPaths(dirCodes, suffix))
+		}
+		dirCodes = extendedDirCodes
+		current = target
+	}
+	return
+}
+
+func calcDirCodeLen(lenMap map[[2][2]int]int, reverseDirButtons map[dirButton][2]int, code []dirButton) (total int) {
+	current := reverseDirButtons[PRESS]
+	for _, button := range code {
+		target := reverseDirButtons[button]
+		total += lenMap[[2][2]int{current, target}]
+		current = target
+	}
+	return
+}
+
+func getUpdateFn[T dirButton | numButton](code []T, buttonMap map[[2]int]T) func(button dirButton, current state) (next state, ok bool) {
+	return func(button dirButton, current state) (next state, ok bool) {
+		if button == PRESS {
+			targetButton, validButton := buttonMap[current.keyPad]
+			if !validButton {
+				panic(fmt.Sprintf("Attempting to press invalid button %v on the key pad", current.keyPad))
+			}
+
+			if code[current.progress] == targetButton {
+				ok = true
+				next = state{
+					keyPad:   current.keyPad,
+					progress: current.progress + 1,
+				}
+			}
+
+		} else {
+			// Moving num pad arm
+			target := pressDirMove(button, current.keyPad)
+			if _, validButton := buttonMap[target]; validButton {
+				ok = true
+				next = state{
+					keyPad:   target,
+					progress: current.progress,
+				}
+			}
+		}
+		return
+	}
 }
 
 func pressDirMove(button dirButton, current [2]int) [2]int {
@@ -158,21 +315,21 @@ func pressDirMove(button dirButton, current [2]int) [2]int {
 	return [2]int{current[0] + shift[0], current[1] + shift[1]}
 }
 
-func runDijkstra(code [4]numButton) int {
+func runDijkstra(codeLen int, initPos [2]int, updateFn func(button dirButton, current state) (next state, ok bool)) [][]dirButton {
 	priorityQueue := make(map[int][]state, 1)
-	initDirPads := [25][2]int{}
-	for i := 0; i < len(initDirPads); i++ {
-		initDirPads[i] = [2]int{2, 1}
-	}
+	visited := make(map[state]struct{})
+	paths := make(map[state][][]dirButton)
+	pathsLen := make(map[state]int)
+
 	start := state{
-		numKeyPad:  [2]int{2, 0},
-		dirKeyPads: initDirPads,
-		progress:   0,
+		keyPad:   initPos,
+		progress: 0,
 	}
 	priorityQueue[0] = []state{start}
+	paths[start] = [][]dirButton{{}}
+	pathsLen[start] = 0
 	scoreWatermark := 0
-
-	visited := make(map[state]struct{})
+	var end *state
 
 	for len(priorityQueue) > 0 {
 		current := pop(priorityQueue, &scoreWatermark)
@@ -181,20 +338,43 @@ func runDijkstra(code [4]numButton) int {
 			continue
 		}
 		visited[current] = struct{}{}
+		currentPaths := paths[current]
+		currentPathLens := pathsLen[current]
 
-		if current.progress == len(code) {
-			// fmt.Println(currentPath)
-			return scoreWatermark
+		if current.progress == codeLen {
+			end = &current
 		} else {
 			for _, button := range [5]dirButton{UP, DOWN, RIGHT, LEFT, PRESS} {
-				if next, ok := updateDirPad(button, current, code, 24); ok {
+				if next, ok := updateFn(button, current); ok {
 					queueUp(priorityQueue, scoreWatermark+1, next)
+
+					if knownPathLen, hasPaths := pathsLen[next]; hasPaths {
+						if knownPathLen == currentPathLens+1 {
+							// Append
+							paths[next] = slices.Concat(paths[next], genPaths(currentPaths, []dirButton{button}))
+						}
+					} else {
+						// Init
+						paths[next] = genPaths(currentPaths, []dirButton{button})
+						pathsLen[next] = currentPathLens + 1
+					}
 				}
 			}
 		}
 	}
 
-	panic("Min path not found!")
+	if end == nil {
+		panic("Min path not found!")
+	}
+	return paths[*end]
+}
+
+func genPaths(current [][]dirButton, suffix []dirButton) (result [][]dirButton) {
+	result = make([][]dirButton, len(current))
+	for i, path := range current {
+		result[i] = slices.Concat(slices.Clone(path), suffix)
+	}
+	return
 }
 
 func pop(priorityQueue map[int][]state, scoreWatermark *int) (result state) {
@@ -224,7 +404,9 @@ func queueUp(priorityQueue map[int][]state, score int, item state) {
 }
 
 func getComplexity(code [4]numButton, minLen int) int {
-	return (int(code[0])*100 + int(code[1])*10 + int(code[2])) * minLen
+	codeValue := (int(code[0])*100 + int(code[1])*10 + int(code[2]))
+	fmt.Printf("Complexity is %d * %d\n", codeValue, minLen)
+	return codeValue * minLen
 }
 
 func parseInput(data []uint8) (codes [][4]numButton) {
@@ -253,6 +435,48 @@ func parseNumButton(s string) numButton {
 	result, e := strconv.ParseInt(s, 0, 64)
 	check(e)
 	return numButton(int(result))
+}
+
+func printCode(code []dirButton) string {
+	var b strings.Builder
+	for _, button := range code {
+		switch button {
+		case UP:
+			fmt.Fprint(&b, "^")
+		case DOWN:
+			fmt.Fprint(&b, "v")
+		case LEFT:
+			fmt.Fprint(&b, "<")
+		case RIGHT:
+			fmt.Fprint(&b, ">")
+		case PRESS:
+			fmt.Fprint(&b, "A")
+		default:
+			panic("Can't print invalid button")
+		}
+	}
+	return b.String()
+}
+
+func parseCode(text string) (code []dirButton) {
+	code = make([]dirButton, len(text))
+	for i, rune := range text {
+		switch rune {
+		case '^':
+			code[i] = UP
+		case 'v':
+			code[i] = DOWN
+		case '<':
+			code[i] = LEFT
+		case '>':
+			code[i] = RIGHT
+		case 'A':
+			code[i] = PRESS
+		default:
+			panic("Can't parse code")
+		}
+	}
+	return
 }
 
 func check(e error) {
