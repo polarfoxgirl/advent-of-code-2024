@@ -4,30 +4,52 @@ import (
 	"fmt"
 	"math"
 	"os"
-
-	// "reflect"
-	// "math"
-	// "slices"
-	// "iter"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
+/*
+Context: looking for cycles in numbers that produce prefixes
+
+Step 1: at least 7
+
+Register 7171773 produced [2 4 1 1 7 5 1]
+256
+Register 7172029 produced [2 4 1 1 7 5 1]
+Register 13793717 produced [2 4 1 1 7 5 1]
+Register 15560381 produced [2 4 1 1 7 5 1]
+Register 15560637 produced [2 4 1 1 7 5 1]
+Register 32337597 produced [2 4 1 1 7 5 1]
+Register 32337853 produced [2 4 1 1 7 5 1]
+... pairs down the line
+
+Step 2: at least 9, start 7171773, step 256
+Register 158166717 produced [2 4 1 1 7 5 1 5 4]
+134217728
+Register 292384445 produced [2 4 1 1 7 5 1 5 4]
+134217728
+Register 426602173 produced [2 4 1 1 7 5 1 5 4]
+Register 560819901 produced [2 4 1 1 7 5 1 5 4]
+Register 695037629 produced [2 4 1 1 7 5 1 5 4]
+Register 963473085 produced [2 4 1 1 7 5 1 5 4]
+...
+
+Step 3: start 158166717, step 134217728
+PROFIT!!
+*/
 func main() {
 	data, err := os.ReadFile("input.txt")
 	check(err)
 
 	_, instructions := parseInput(data)
 	fmt.Printf("Input: %d instructions\n", len(instructions))
+	fmt.Println(instructions)
 
-	// fmt.Println(exec(117440, instructions))
-
-	a := 0
-	for ; ; a++ {
-		// if a%1000 == 0 {
-		// 	fmt.Println(a)
-		// }
+	// a := 7171773
+	// for ; ; a += 256 {
+	a := 158166717
+	for ; ; a += 134217728 {
 		if success := exec(a, instructions); success {
 			break
 		}
@@ -67,6 +89,9 @@ func exec(a int, instructions []int) bool {
 			i := len(out)
 			value := combo(&registers, operand) % 8
 			if i >= len(instructions) || instructions[i] != value {
+				// if len(out) > 9 {
+				// 	fmt.Printf("Register %d produced %v\n", a, out)
+				// }
 				return false
 			}
 			out = append(out, value)
